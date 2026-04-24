@@ -13,6 +13,9 @@ class Settings:
     wp_base_url: str
     wp_username: str
     wp_password: str
+    naver_client_id: str
+    naver_client_secret: str
+    youtube_api_key: str
 
 
 def load_settings() -> Settings:
@@ -23,4 +26,7 @@ def load_settings() -> Settings:
         wp_base_url=os.getenv("WP_BASE_URL", "").strip(),
         wp_username=os.getenv("WP_USERNAME", "").strip(),
         wp_password=os.getenv("WP_PASSWORD", "").strip(),
+        naver_client_id=os.getenv("NAVER_CLIENT_ID", "").strip(),
+        naver_client_secret=os.getenv("NAVER_CLIENT_SECRET", "").strip(),
+        youtube_api_key=os.getenv("YOUTUBE_API_KEY", "").strip(),
     )

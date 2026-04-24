@@ -63,54 +63,87 @@ def _get_thumbnail_url(youtube_url: str) -> str:
         return ""
 
 
+def _run_yt_dlp_subs(
+    *,
+    youtube_url: str,
+    output_template: str,
+    auto: bool,
+    sub_langs: str,
+) -> None:
+    """yt-dlp로 자막 다운로드. 실패해도 예외 던지지 않음."""
+    flag = "--write-auto-sub" if auto else "--write-sub"
+    subprocess.run(
+        [
+            "yt-dlp",
+            flag,
+            "--sub-langs", sub_langs,
+            "--sub-format", "vtt",
+            "--skip-download",
+            "--output", output_template,
+            youtube_url,
+        ],
+        capture_output=True,
+        check=False,
+    )
+
+
 def transcribe_from_youtube_url(youtube_url: str) -> Transcript:
     thumbnail_url = _get_thumbnail_url(youtube_url)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         output_template = str(Path(tmpdir) / "subtitle")
 
-        # 자동 생성 자막 시도 (한국어 → 영어 순)
-        subprocess.run(
-            [
-                "yt-dlp",
-                "--write-auto-sub",
-                "--sub-langs", "ko,en",
-                "--sub-format", "vtt",
-                "--skip-download",
-                "--output", output_template,
-                youtube_url,
-            ],
-            capture_output=True,
-            check=False,
+        # 1차: 한국어·영어 자동 자막 (ko-KR, en-US 등 변형 포함 정규식)
+        _run_yt_dlp_subs(
+            youtube_url=youtube_url,
+            output_template=output_template,
+            auto=True,
+            sub_langs="ko.*,en.*",
         )
-
         vtt_files = list(Path(tmpdir).glob("*.vtt"))
 
+        # 2차: 한국어·영어 수동 자막 (변형 포함)
         if not vtt_files:
-            # 수동 자막 시도
-            subprocess.run(
-                [
-                    "yt-dlp",
-                    "--write-sub",
-                    "--sub-langs", "ko,en",
-                    "--sub-format", "vtt",
-                    "--skip-download",
-                    "--output", output_template,
-                    youtube_url,
-                ],
-                capture_output=True,
-                check=False,
+            _run_yt_dlp_subs(
+                youtube_url=youtube_url,
+                output_template=output_template,
+                auto=False,
+                sub_langs="ko.*,en.*",
+            )
+            vtt_files = list(Path(tmpdir).glob("*.vtt"))
+
+        # 3차 폴백: 모든 언어의 자동 자막 시도 (일본어 등 그 외 언어 허용)
+        if not vtt_files:
+            _run_yt_dlp_subs(
+                youtube_url=youtube_url,
+                output_template=output_template,
+                auto=True,
+                sub_langs="all",
+            )
+            vtt_files = list(Path(tmpdir).glob("*.vtt"))
+
+        # 4차 폴백: 모든 언어의 수동 자막 시도
+        if not vtt_files:
+            _run_yt_dlp_subs(
+                youtube_url=youtube_url,
+                output_template=output_template,
+                auto=False,
+                sub_langs="all",
             )
             vtt_files = list(Path(tmpdir).glob("*.vtt"))
 
         if not vtt_files:
             raise RuntimeError(
-                "자막을 찾을 수 없습니다. 자막이 없는 영상이거나 지원하지 않는 언어입니다."
+                "자막을 찾을 수 없습니다. 이 영상은 어떤 언어의 자막도 제공하지 않습니다."
             )
 
-        # 한국어 자막 우선 선택
-        ko_files = [f for f in vtt_files if ".ko." in f.name]
-        vtt_file = ko_files[0] if ko_files else vtt_files[0]
+        # 선호 순: 한국어 > 영어 > 그 외 (알파벳 순)
+        ko_files = sorted(f for f in vtt_files if ".ko" in f.name)
+        en_files = sorted(f for f in vtt_files if ".en" in f.name)
+        other_files = sorted(
+            f for f in vtt_files if ".ko" not in f.name and ".en" not in f.name
+        )
+        vtt_file = (ko_files or en_files or other_files)[0]
 
         raw_text = vtt_file.read_text(encoding="utf-8")
         parsed = _parse_vtt(raw_text)
