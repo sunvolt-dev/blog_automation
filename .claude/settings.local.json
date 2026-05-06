@@ -2,7 +2,18 @@
   "permissions": {
     "allow": [
       "Bash(uv venv:*)",
-      "Bash(uv pip:*)"
+      "Bash(uv pip:*)",
+      "Bash(python -m py_compile main.py core/image_generator.py)",
+      "Bash(python3 -m py_compile main.py core/image_generator.py)",
+      "Bash(python3 -c \"import yt_dlp, google.genai, tenacity, markdown, dotenv, requests; print\\('all imports ok'\\)\")",
+      "Bash(pip3 list *)",
+      "Bash(uv --version)",
+      "Bash(.venv/bin/python main.py \"https://youtu.be/yvBmMNY2Gro?si=cOobdfVTfE4d_rw5\")",
+      "Bash(.venv/bin/python main.py 'https://youtu.be/yvBmMNY2Gro?si=cOobdfVTfE4d_rw5')",
+      "Bash(unset PATH)",
+      "Bash(export PATH=\"/usr/bin:/bin\")",
+      "Bash(.venv/bin/python -m py_compile main.py)",
+      "WebSearch"
     ]
   }
 }

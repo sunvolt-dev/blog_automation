@@ -119,6 +119,7 @@ def main(youtube_url: str, publish: bool = False) -> None:
         editorial_guide = (data_dir / "editorial_guide.md").read_text(encoding="utf-8")
         seo_guide = (data_dir / "SEO_GUIDE.md").read_text(encoding="utf-8")
         keywords_seed = (data_dir / "keywords_seed.md").read_text(encoding="utf-8")
+        footer_cta = (data_dir / "footer_cta.md").read_text(encoding="utf-8")
 
         # 1. 자막 추출
         logger.info("자막 추출 중: %s", youtube_url)
@@ -142,8 +143,13 @@ def main(youtube_url: str, publish: bool = False) -> None:
                 len(trending.youtube_trends),
             )
         else:
-            keywords_trending = (data_dir / "keywords_trending.md").read_text(encoding="utf-8")
-            logger.warning("트렌드 수집 결과 없음 — 기존 keywords_trending.md 사용")
+            trending_path = data_dir / "keywords_trending.md"
+            if trending_path.exists():
+                keywords_trending = trending_path.read_text(encoding="utf-8")
+                logger.warning("트렌드 수집 결과 없음 — 기존 keywords_trending.md 사용")
+            else:
+                keywords_trending = ""
+                logger.warning("트렌드 수집 결과 없음 — 트렌드 키워드 없이 진행 (시드만 사용)")
             for e in trending.errors:
                 logger.warning("수집 오류: %s", e)
 
@@ -178,16 +184,11 @@ def main(youtube_url: str, publish: bool = False) -> None:
             logger.warning("이미지 생성/업로드 실패, 이미지 없이 진행: %s", e)
 
         # 5. WordPress 게시
+        full_markdown = post.markdown.rstrip() + "\n\n" + footer_cta.lstrip()
         html_content = md.markdown(
-            post.markdown,
+            full_markdown,
             extensions=["extra", "nl2br", "tables", "sane_lists"],
         )
-        html_content += """
-<hr>
-<p><strong>배터리 관련 궁금한 점이 있으신가요?</strong><br>
-코리아배터리 전문 상담팀이 도와드리겠습니다.<br>
-📞 <strong>031-990-3362</strong>로 문의주세요!</p>
-"""
         logger.info("WordPress %s 중", "발행" if publish else "초안 저장")
         result = publish_post(
             wp_base_url=settings.wp_base_url,
