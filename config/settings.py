@@ -8,7 +8,8 @@ from dotenv import load_dotenv
 
 @dataclass(frozen=True)
 class Settings:
-    gemini_api_key: str
+    llm_base_url: str
+    llm_model: str
     hf_token: str
     wp_base_url: str
     wp_username: str
@@ -21,7 +22,8 @@ class Settings:
 def load_settings() -> Settings:
     load_dotenv()
     return Settings(
-        gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
+        llm_base_url=os.getenv("LLM_BASE_URL", "http://localhost:8080/v1").strip(),
+        llm_model=os.getenv("LLM_MODEL", "mlx-community/Qwen3-32B-4bit").strip(),
         hf_token=os.getenv("HF_TOKEN", "").strip(),
         wp_base_url=os.getenv("WP_BASE_URL", "").strip(),
         wp_username=os.getenv("WP_USERNAME", "").strip(),

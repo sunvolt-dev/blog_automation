@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import markdown as md
+import requests
 
 from config.prompts import SYSTEM_PROMPT
 from config.settings import load_settings
@@ -34,6 +35,18 @@ def _setup_logging() -> None:
 
 def _admin_edit_url(wp_base_url: str, post_id: int) -> str:
     return wp_base_url.rstrip("/") + f"/wp-admin/post.php?post={post_id}&action=edit"
+
+
+def _check_llm_server(base_url: str, model: str) -> None:
+    """mlx_lm.server 가 살아있는지 사전 확인. 죽어 있으면 즉시 친절한 에러."""
+    try:
+        requests.get(base_url.rstrip("/") + "/models", timeout=5).raise_for_status()
+    except Exception as e:
+        raise RuntimeError(
+            f"LLM 서버에 연결할 수 없습니다 ({base_url}): {e}\n"
+            f"별도 터미널에서 다음 명령으로 서버를 먼저 기동하세요:\n"
+            f"  mlx_lm.server --model {model} --port 8080"
+        ) from e
 
 
 def _write_generation_log(
@@ -111,6 +124,7 @@ def main(youtube_url: str, publish: bool = False) -> None:
 
     try:
         settings = load_settings()
+        _check_llm_server(settings.llm_base_url, settings.llm_model)
         base_dir = Path(__file__).parent
         data_dir = base_dir / "data"
         logs_dir = base_dir / "logs"
@@ -153,8 +167,8 @@ def main(youtube_url: str, publish: bool = False) -> None:
             for e in trending.errors:
                 logger.warning("수집 오류: %s", e)
 
-        # 3. 블로그 글 생성 (Gemini)
-        logger.info("블로그 글 생성 중 (Gemini 2.5 Flash)")
+        # 3. 블로그 글 생성 (로컬 LLM via mlx_lm.server)
+        logger.info("블로그 글 생성 중 (local LLM: %s)", settings.llm_model)
         post = generate_blog_post(
             transcript_text=transcript.cleaned,
             company_info_md=company_info,
@@ -163,7 +177,8 @@ def main(youtube_url: str, publish: bool = False) -> None:
             keywords_seed_md=keywords_seed,
             keywords_trending_md=keywords_trending,
             system_prompt=SYSTEM_PROMPT,
-            api_key=settings.gemini_api_key,
+            base_url=settings.llm_base_url,
+            model=settings.llm_model,
         )
         logger.info("생성 완료: '%s'", post.title)
         logger.info("이미지 프롬프트: %s", post.image_prompt)

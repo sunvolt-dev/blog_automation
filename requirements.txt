@@ -1,6 +1,6 @@
 yt-dlp
 requests
 python-dotenv
-google-genai
+openai
 markdown
 tenacity

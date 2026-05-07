@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 
-from google import genai
-from google.genai.errors import ServerError
+from openai import APIConnectionError, APIStatusError, OpenAI
 from tenacity import (
     before_sleep_log,
     retry,
@@ -14,6 +14,14 @@ from tenacity import (
 )
 
 logger = logging.getLogger(__name__)
+
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+# 본문 누수 방지: 굵게/헤딩/평문 모두 잡는 IMAGE_PROMPT 마커 라인
+_IMAGE_MARKER_LINE_RE = re.compile(
+    r"^\s*\*{0,2}#{0,3}\s*IMAGE_PROMPT\s*:?\s*\*{0,2}\s*$",
+    re.MULTILINE,
+)
 
 
 @dataclass(frozen=True)
@@ -26,17 +34,13 @@ class GeneratedPost:
 @retry(
     stop=stop_after_attempt(5),
     wait=wait_exponential(multiplier=4, min=4, max=60),
-    retry=retry_if_exception_type(ServerError),
+    retry=retry_if_exception_type((APIConnectionError, APIStatusError)),
     before_sleep=before_sleep_log(logger, logging.WARNING),
     reraise=True,
 )
-def _call_gemini_with_retry(client, model: str, contents: str, config: dict):
-    """Gemini API 호출. 503/5xx ServerError 발생 시 지수 백오프로 최대 5회 재시도."""
-    return client.models.generate_content(
-        model=model,
-        contents=contents,
-        config=config,
-    )
+def _call_llm_with_retry(client: OpenAI, **kwargs):
+    """로컬 mlx-lm 서버 호출. 연결/5xx 발생 시 지수 백오프로 최대 5회 재시도."""
+    return client.chat.completions.create(**kwargs)
 
 
 def generate_blog_post(
@@ -47,9 +51,10 @@ def generate_blog_post(
     keywords_seed_md: str,
     keywords_trending_md: str,
     system_prompt: str,
-    api_key: str,
+    base_url: str,
+    model: str,
 ) -> GeneratedPost:
-    client = genai.Client(api_key=api_key)
+    client = OpenAI(base_url=base_url, api_key="not-needed")
 
     user_message = f"""다음 유튜브 자막을 바탕으로 블로그 글을 작성해주세요.
 
@@ -72,14 +77,30 @@ def generate_blog_post(
 {transcript_text}
 """
 
-    response = _call_gemini_with_retry(
+    system_with_no_think = system_prompt.rstrip() + "\n\n/no_think"
+
+    response = _call_llm_with_retry(
         client=client,
-        model="gemini-2.5-flash",
-        contents=user_message,
-        config={"system_instruction": system_prompt},
+        model=model,
+        messages=[
+            {"role": "system", "content": system_with_no_think},
+            {"role": "user", "content": user_message},
+        ],
+        temperature=0.6,
+        top_p=0.9,
+        presence_penalty=0.3,
+        max_tokens=16384,
+        seed=42,
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
     )
 
-    text_content = response.text.strip()
+    raw_content = response.choices[0].message.content
+    if not raw_content:
+        raise RuntimeError(
+            f"LLM 응답에 content 가 비어있습니다 (reasoning 모드 누수 가능성). "
+            f"finish_reason={response.choices[0].finish_reason}"
+        )
+    text_content = _THINK_BLOCK_RE.sub("", raw_content.strip()).strip()
 
     # TITLE: 줄과 본문 분리
     lines = text_content.splitlines()
@@ -96,23 +117,19 @@ def generate_blog_post(
     while body_start < len(lines) and not lines[body_start].strip():
         body_start += 1
 
-    # IMAGE_PROMPT: 이후 본문 끝까지 모든 줄을 수집 (다중 줄 지원)
-    image_prompt_lines: list[str] = []
-    body_lines: list[str] = []
-    in_image_prompt = False
-    for line in lines[body_start:]:
-        if line.startswith("IMAGE_PROMPT:"):
-            in_image_prompt = True
-            first_content = line[len("IMAGE_PROMPT:"):].strip()
-            if first_content:
-                image_prompt_lines.append(first_content)
-        elif in_image_prompt:
-            image_prompt_lines.append(line)
-        else:
-            body_lines.append(line)
+    # IMAGE_PROMPT 마커 — 굵게/헤딩/평문 어떤 형태든 매칭, 마지막 출현 기준 분리
+    body_text = "\n".join(lines[body_start:])
+    marker_matches = list(_IMAGE_MARKER_LINE_RE.finditer(body_text))
+    if marker_matches:
+        last = marker_matches[-1]
+        markdown_section = body_text[: last.start()]
+        image_prompt = body_text[last.end():].strip()
+    else:
+        markdown_section = body_text
+        image_prompt = ""
 
-    image_prompt = "\n".join(image_prompt_lines).strip()
-    markdown = "\n".join(body_lines).strip()
+    # 방어적 클린업: 본문에 남은 IMAGE_PROMPT 마커성 라인 제거
+    markdown = _IMAGE_MARKER_LINE_RE.sub("", markdown_section).strip()
 
     # 폴백: 첫 번째 heading을 제목으로
     if not title:
