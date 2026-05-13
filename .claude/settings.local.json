@@ -26,7 +26,11 @@
       "Bash(time curl -s -m 60 http://localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -d '{\"model\":\"mlx-community/Qwen3.5-122B-A10B-4bit\",\"messages\":[{\"role\":\"user\",\"content\":\"한 단어로 답해. 한국의 수도는? /no_think\"}],\"max_tokens\":20,\"temperature\":0}')",
       "Bash(curl -s -m 60 http://localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -d '{\"model\":\"mlx-community/Qwen3.5-122B-A10B-4bit\",\"messages\":[{\"role\":\"user\",\"content\":\"한 단어로 답해. 한국의 수도는?\"}],\"max_tokens\":50,\"temperature\":0,\"chat_template_kwargs\":{\"enable_thinking\":false}}')",
       "Bash(python3 -c \"import sys, json; r=json.load\\(sys.stdin\\); m=r['choices'][0]['message']; print\\('content:', repr\\(m.get\\('content'\\)\\)\\); print\\('reasoning:', repr\\(\\(m.get\\('reasoning'\\) or ''\\)[:150]\\)\\); print\\('finish:', r['choices'][0]['finish_reason']\\)\")",
-      "Bash(python3 -c \"import ast; [ast.parse\\(open\\(f\\).read\\(\\), f\\) for f in ['core/generator.py', 'config/prompts.py']]; print\\('OK'\\)\")"
+      "Bash(python3 -c \"import ast; [ast.parse\\(open\\(f\\).read\\(\\), f\\) for f in ['core/generator.py', 'config/prompts.py']]; print\\('OK'\\)\")",
+      "Bash(sysctl -n hw.memsize machdep.cpu.brand_string hw.model)",
+      "Bash(system_profiler SPDisplaysDataType)",
+      "Bash(df -h /Users/geullobeolbijeon | tail -1 && echo \"---\" && ls ~/.cache/huggingface 2>/dev/null && echo \"hf cache exists\" || echo \"no hf cache yet\")",
+      "Read(//Users/geullobeolbijeon/.cache/huggingface/**)"
     ]
   }
 }

@@ -183,9 +183,9 @@ def main(youtube_url: str, publish: bool = False) -> None:
         logger.info("생성 완료: '%s'", post.title)
         logger.info("이미지 프롬프트: %s", post.image_prompt)
 
-        # 4. 이미지 생성 및 업로드 (HuggingFace FLUX.1-schnell → WordPress)
+        # 4. 이미지 생성 및 업로드 (로컬 mflux FLUX.1-dev → WordPress)
         featured_media_id = 0
-        logger.info("이미지 생성 중 (HuggingFace FLUX.1-schnell)")
+        logger.info("이미지 생성 중 (로컬 mflux FLUX.1-dev BF16)")
         try:
             featured_media_id = generate_and_upload_image(
                 prompt=post.image_prompt,

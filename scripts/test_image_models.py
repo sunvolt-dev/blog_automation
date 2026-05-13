@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -32,23 +33,48 @@ sys.path.insert(0, str(ROOT))
 from config.settings import load_settings  # noqa: E402
 
 
-# HuggingFace Inference API로 접근할 모델 목록
-MODELS: dict[str, dict[str, str]] = {
+# 모델 카탈로그.
+# - backend="hf"  : HuggingFace Inference Router (네트워크 호출)
+# - backend="mflux": 로컬 MLX 실행 (mflux-generate CLI). M4 Max 128GB 환경 가정.
+MODELS: dict[str, dict] = {
     "flux-schnell": {
+        "backend": "hf",
         "id": "black-forest-labs/FLUX.1-schnell",
-        "note": "현재 사용 중 (baseline, 4-step 고속)",
+        "note": "HF API. 현재 사용 중 (baseline, 4-step 고속)",
     },
     "flux-dev": {
+        "backend": "hf",
         "id": "black-forest-labs/FLUX.1-dev",
-        "note": "FLUX 고품질 버전 (20~50 step, 비상용 라이선스)",
+        "note": "HF API. FLUX 고품질 버전 (20~50 step, 비상용 라이선스)",
     },
     "sd35-large": {
+        "backend": "hf",
         "id": "stabilityai/stable-diffusion-3.5-large",
-        "note": "Stable Diffusion 3.5 Large (Community 라이선스)",
+        "note": "HF API. Stable Diffusion 3.5 Large (Community 라이선스)",
     },
     "sdxl": {
+        "backend": "hf",
         "id": "stabilityai/stable-diffusion-xl-base-1.0",
-        "note": "Stable Diffusion XL (OpenRAIL, 상업 OK)",
+        "note": "HF API. Stable Diffusion XL (OpenRAIL, 상업 OK)",
+    },
+    # --- 로컬 mflux ---
+    # mflux 0.17.5 의 --base-model 만으로는 path resolution 이 None 이 되어 실패.
+    # --model 에 HF repo 를 명시해야 정상 동작 (mflux 의 알려진 동작).
+    "mflux-dev": {
+        "backend": "mflux",
+        "model": "black-forest-labs/FLUX.1-dev",
+        "base_model": "dev",
+        "steps": 50,
+        "guidance": 3.5,
+        "note": "로컬 mflux. FLUX.1-dev BF16 50-step. 첫 실행 시 ~24GB 다운로드. HF 라이선스 수락 필요",
+    },
+    "mflux-schnell": {
+        "backend": "mflux",
+        "model": "black-forest-labs/FLUX.1-schnell",
+        "base_model": "schnell",
+        "steps": 4,
+        "guidance": 0.0,
+        "note": "로컬 mflux. FLUX.1-schnell 4-step. 비-gated, HF schnell 과 1:1 비교용",
     },
 }
 
@@ -98,6 +124,63 @@ def generate_with_hf(prompt: str, model_id: str, hf_token: str) -> bytes:
     return resp.content
 
 
+def generate_with_mflux(
+    prompt: str,
+    *,
+    model: str,
+    base_model: str,
+    steps: int,
+    guidance: float,
+    out_path: Path,
+    hf_token: str,
+    width: int = 1024,
+    height: int = 1024,
+    seed: int = 42,
+) -> bytes:
+    """로컬 mflux CLI 로 이미지 생성. 결과 파일 경로 반환 + bytes 도 반환.
+
+    HF_TOKEN 을 서브프로세스 환경에 명시적으로 주입한다 — gated 모델
+    (FLUX.1-dev 등) 다운로드에 필요.
+    """
+    import os
+
+    mflux_bin = ROOT / ".venv" / "bin" / "mflux-generate"
+    if not mflux_bin.exists():
+        raise RuntimeError(
+            f"{mflux_bin} 가 없습니다. .venv 활성화 후 `uv pip install mflux` 실행."
+        )
+
+    cmd = [
+        str(mflux_bin),
+        "--model", model,
+        "--base-model", base_model,
+        "--prompt", prompt,
+        "--steps", str(steps),
+        "--guidance", str(guidance),
+        "--width", str(width),
+        "--height", str(height),
+        "--seed", str(seed),
+        "--output", str(out_path),
+    ]
+    env = os.environ.copy()
+    if hf_token:
+        env["HF_TOKEN"] = hf_token
+    env.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+
+    # 첫 실행은 가중치 다운로드(~24GB) → 시간 넉넉히
+    proc = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=3600, env=env
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"mflux-generate 실패 (rc={proc.returncode})\n"
+            f"STDERR: {proc.stderr[-1500:]}"
+        )
+    if not out_path.exists():
+        raise RuntimeError(f"mflux 가 출력을 만들지 않음: {out_path}")
+    return out_path.read_bytes()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="여러 이미지 모델을 같은 프롬프트로 테스트해 품질 비교",
@@ -130,10 +213,14 @@ def main() -> None:
     if invalid:
         raise SystemExit(f"알 수 없는 모델 이름: {invalid}. 사용 가능: {list(MODELS)}")
 
-    # 설정 로드
+    # 설정 로드. HF 백엔드는 항상 토큰 필요. mflux 도 gated 모델 (FLUX.1-dev) 다운로드에 필요.
     settings = load_settings()
-    if not settings.hf_token:
-        raise SystemExit(".env에 HF_TOKEN이 없습니다.")
+    needs_hf = any(MODELS[m]["backend"] in ("hf", "mflux") for m in selected_models)
+    if needs_hf and not settings.hf_token:
+        raise SystemExit(
+            ".env에 HF_TOKEN이 없습니다. "
+            "HF 백엔드 호출 또는 gated mflux 모델 다운로드에 필요합니다."
+        )
 
     # 출력 디렉토리
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -150,21 +237,37 @@ def main() -> None:
     results: list[dict] = []
     for name in selected_models:
         info = MODELS[name]
-        model_id = info["id"]
+        backend = info["backend"]
         note = info["note"]
-        print(f"▶ [{name}] {model_id}")
+        label = info.get("id") or f"mflux:{info.get('base_model')}"
+        print(f"▶ [{name}] {label}")
         print(f"  ({note})")
         start = time.time()
         try:
-            img_bytes = generate_with_hf(prompt, model_id, settings.hf_token)
+            if backend == "hf":
+                img_bytes = generate_with_hf(prompt, info["id"], settings.hf_token)
+                out_path = out_dir / f"{name}.jpg"
+                out_path.write_bytes(img_bytes)
+            elif backend == "mflux":
+                # mflux는 PNG 로 저장
+                out_path = out_dir / f"{name}.png"
+                img_bytes = generate_with_mflux(
+                    prompt,
+                    model=info["model"],
+                    base_model=info["base_model"],
+                    steps=info["steps"],
+                    guidance=info["guidance"],
+                    out_path=out_path,
+                    hf_token=settings.hf_token,
+                )
+            else:
+                raise RuntimeError(f"알 수 없는 backend: {backend}")
             elapsed = time.time() - start
-            out_path = out_dir / f"{name}.jpg"
-            out_path.write_bytes(img_bytes)
             print(f"  ✓ 성공: {out_path.name} ({elapsed:.1f}s, {len(img_bytes):,} bytes)\n")
             results.append(
                 {
                     "name": name,
-                    "model_id": model_id,
+                    "model_id": label,
                     "note": note,
                     "status": "OK",
                     "elapsed": elapsed,
@@ -179,7 +282,7 @@ def main() -> None:
             results.append(
                 {
                     "name": name,
-                    "model_id": model_id,
+                    "model_id": label,
                     "note": note,
                     "status": "FAIL",
                     "elapsed": elapsed,
